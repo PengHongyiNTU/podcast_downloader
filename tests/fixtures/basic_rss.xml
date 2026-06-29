@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>Example Show</title>
+    <link>https://example.com/show</link>
+    <description>A show used in tests.</description>
+    <item>
+      <guid>episode-3</guid>
+      <title>Newest Episode</title>
+      <pubDate>Mon, 29 Jun 2026 10:00:00 GMT</pubDate>
+      <enclosure url="https://media.example.com/episode-3.mp3" length="123" type="audio/mpeg"/>
+    </item>
+    <item>
+      <guid>episode-2</guid>
+      <title>Middle Episode</title>
+      <pubDate>Sun, 28 Jun 2026 10:00:00 GMT</pubDate>
+      <enclosure url="https://media.example.com/episode-2.mp3" length="123" type="audio/mpeg"/>
+    </item>
+    <item>
+      <guid>episode-1</guid>
+      <title>Oldest Episode</title>
+      <pubDate>Sat, 27 Jun 2026 10:00:00 GMT</pubDate>
+      <enclosure url="https://media.example.com/episode-1.mp3" length="123" type="audio/mpeg"/>
+    </item>
+  </channel>
+</rss>
+
