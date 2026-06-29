@@ -1,0 +1,27 @@
+# Rust
+/target/
+**/*.rs.bk
+
+# Tauri / frontend
+/node_modules/
+/dist/
+/.vite/
+
+# Local app data
+*.db
+*.db-shm
+*.db-wal
+*.log
+/downloads/
+/Shows/
+
+# Environment
+.env
+.env.*
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
