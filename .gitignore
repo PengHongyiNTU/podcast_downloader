@@ -25,3 +25,7 @@ Thumbs.db
 .idea/
 .vscode/
 
+# Release staging
+/releases/*
+!/releases/README.md
+!/releases/.gitkeep
