@@ -298,6 +298,19 @@ impl Db {
         rows.into_iter().map(episode_from_row).collect()
     }
 
+    pub async fn episodes_with_files_for_feed(&self, feed_id: &str) -> Result<Vec<EpisodeRecord>> {
+        let rows = sqlx::query(
+            "SELECT id, feed_id, episode_key, raw_title, normalized_title, raw_author, published_at, media_url, media_content_type, media_length_bytes, status, file_path, first_seen_at, downloaded_at, deleted_at, last_error
+             FROM episodes
+             WHERE feed_id = ? AND file_path IS NOT NULL
+             ORDER BY COALESCE(published_at, downloaded_at, first_seen_at) DESC, downloaded_at DESC",
+        )
+        .bind(feed_id)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter().map(episode_from_row).collect()
+    }
+
     pub async fn episodes_for_feed(&self, feed_id: &str) -> Result<Vec<EpisodeRecord>> {
         let rows = sqlx::query(
             "SELECT id, feed_id, episode_key, raw_title, normalized_title, raw_author, published_at, media_url, media_content_type, media_length_bytes, status, file_path, first_seen_at, downloaded_at, deleted_at, last_error

@@ -1,5 +1,7 @@
 mod common;
 
+use std::time::Duration;
+
 use podcast_downloader::{CoreConfig, DownloadProgress, EpisodeStatus, PodcastApp};
 
 #[tokio::test]
@@ -98,6 +100,148 @@ async fn list_episodes_returns_watched_show_history() {
 }
 
 #[tokio::test]
+async fn delete_downloaded_episode_removes_file_and_marks_deleted() {
+    let test = common::TestApp::new().await;
+    let server = wiremock::MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::method("GET"))
+        .and(wiremock::matchers::path("/feed.xml"))
+        .respond_with(
+            wiremock::ResponseTemplate::new(200)
+                .set_body_string(common::rss_with_single_mp3(&server.uri())),
+        )
+        .mount(&server)
+        .await;
+    wiremock::Mock::given(wiremock::matchers::method("GET"))
+        .and(wiremock::matchers::path("/episode-3.mp3"))
+        .respond_with(wiremock::ResponseTemplate::new(200).set_body_bytes("newest audio"))
+        .mount(&server)
+        .await;
+
+    let feed = test
+        .app
+        .add_feed(&format!("{}/feed.xml", server.uri()))
+        .await
+        .unwrap();
+    test.app.check_feed(&feed.id).await.unwrap();
+    let downloaded = test
+        .app
+        .list_episodes(&feed.id)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|episode| episode.status == EpisodeStatus::Downloaded)
+        .unwrap();
+    let file_path = downloaded.file_path.clone().unwrap();
+    assert!(std::path::Path::new(&file_path).exists());
+
+    let summary = test
+        .app
+        .delete_downloaded_episode(&downloaded.id)
+        .await
+        .unwrap();
+
+    assert_eq!(summary.requested, 1);
+    assert_eq!(summary.deleted, 1);
+    assert_eq!(summary.files_deleted, 1);
+    assert!(!std::path::Path::new(&file_path).exists());
+    let episode = test
+        .app
+        .list_episodes(&feed.id)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|episode| episode.id == downloaded.id)
+        .unwrap();
+    assert_eq!(episode.status, EpisodeStatus::Deleted);
+    assert_eq!(test.app.library_stats().await.unwrap().downloaded, 0);
+}
+
+#[tokio::test]
+async fn remove_feed_deletes_downloaded_files() {
+    let test = common::TestApp::new().await;
+    let server = wiremock::MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::method("GET"))
+        .and(wiremock::matchers::path("/feed.xml"))
+        .respond_with(
+            wiremock::ResponseTemplate::new(200)
+                .set_body_string(common::rss_with_single_mp3(&server.uri())),
+        )
+        .mount(&server)
+        .await;
+    wiremock::Mock::given(wiremock::matchers::method("GET"))
+        .and(wiremock::matchers::path("/episode-3.mp3"))
+        .respond_with(wiremock::ResponseTemplate::new(200).set_body_bytes("newest audio"))
+        .mount(&server)
+        .await;
+
+    let feed = test
+        .app
+        .add_feed(&format!("{}/feed.xml", server.uri()))
+        .await
+        .unwrap();
+    test.app.check_feed(&feed.id).await.unwrap();
+    assert_eq!(test.downloaded_files().len(), 1);
+
+    test.app.remove_feed(&feed.id).await.unwrap();
+
+    assert!(test.app.list_feeds().await.unwrap().is_empty());
+    assert!(test.downloaded_files().is_empty());
+    let stats = test.app.library_stats().await.unwrap();
+    assert_eq!(stats.feeds, 0);
+    assert_eq!(stats.episodes, 0);
+    assert_eq!(stats.downloaded, 0);
+}
+
+#[tokio::test]
+async fn remove_feed_deletes_any_recorded_episode_files() {
+    let test = common::TestApp::new().await;
+    let server = wiremock::MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::method("GET"))
+        .and(wiremock::matchers::path("/feed.xml"))
+        .respond_with(
+            wiremock::ResponseTemplate::new(200)
+                .set_body_string(common::rss_with_single_mp3(&server.uri())),
+        )
+        .mount(&server)
+        .await;
+    wiremock::Mock::given(wiremock::matchers::method("GET"))
+        .and(wiremock::matchers::path("/episode-3.mp3"))
+        .respond_with(wiremock::ResponseTemplate::new(200).set_body_bytes("newest audio"))
+        .mount(&server)
+        .await;
+
+    let feed = test
+        .app
+        .add_feed(&format!("{}/feed.xml", server.uri()))
+        .await
+        .unwrap();
+    test.app.check_feed(&feed.id).await.unwrap();
+    let downloaded = test
+        .app
+        .list_episodes(&feed.id)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|episode| episode.status == EpisodeStatus::Downloaded)
+        .unwrap();
+    let file_path = downloaded.file_path.clone().unwrap();
+    sqlx::query("UPDATE episodes SET status = 'failed' WHERE id = ?")
+        .bind(&downloaded.id)
+        .execute(
+            &sqlx::SqlitePool::connect(&format!("sqlite://{}", test.db_path.display()))
+                .await
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    test.app.remove_feed(&feed.id).await.unwrap();
+
+    assert!(!std::path::Path::new(&file_path).exists());
+    assert!(test.downloaded_files().is_empty());
+}
+
+#[tokio::test]
 async fn check_feed_emits_download_progress() {
     let test = common::TestApp::new().await;
     let server = wiremock::MockServer::start().await;
@@ -139,6 +283,52 @@ async fn check_feed_emits_download_progress() {
         events
             .iter()
             .any(|event| matches!(event, DownloadProgress::DownloadFinished { .. }))
+    );
+}
+
+#[tokio::test]
+async fn media_download_is_not_limited_by_feed_http_timeout() {
+    let temp = tempfile::tempdir().unwrap();
+    let downloads = temp.path().join("downloads");
+    let db_path = temp.path().join("podcasts.db");
+    let mut config = CoreConfig::new(&db_path, &downloads);
+    config.http_timeout = Duration::from_millis(50);
+    let app = PodcastApp::open(config).await.unwrap();
+
+    let server = wiremock::MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::method("GET"))
+        .and(wiremock::matchers::path("/feed.xml"))
+        .respond_with(
+            wiremock::ResponseTemplate::new(200)
+                .set_body_string(common::rss_with_single_mp3(&server.uri())),
+        )
+        .mount(&server)
+        .await;
+    wiremock::Mock::given(wiremock::matchers::method("GET"))
+        .and(wiremock::matchers::path("/episode-3.mp3"))
+        .respond_with(
+            wiremock::ResponseTemplate::new(200)
+                .set_delay(Duration::from_millis(150))
+                .set_body_bytes("newest audio"),
+        )
+        .mount(&server)
+        .await;
+
+    let feed = app
+        .add_feed(&format!("{}/feed.xml", server.uri()))
+        .await
+        .unwrap();
+    let summary = app.check_feed(&feed.id).await.unwrap();
+
+    assert_eq!(summary.downloaded, 1);
+    assert_eq!(
+        app.list_episodes(&feed.id)
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|episode| episode.status == EpisodeStatus::Downloaded)
+            .count(),
+        1
     );
 }
 

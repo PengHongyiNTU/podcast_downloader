@@ -139,6 +139,13 @@ export type DownloadBatchSummary = {
   errors: string[];
 };
 
+export type DeleteDownloadSummary = {
+  requested: number;
+  deleted: number;
+  files_deleted: number;
+  errors: string[];
+};
+
 export type AppErrorDto = {
   kind: string;
   message: string;
@@ -210,6 +217,12 @@ export type DownloadProgress =
 
 export type TaskStarted = {
   name: string;
+};
+
+export type TaskAccepted = {
+  task_id: string;
+  name: string;
+  queued_position: number;
 };
 
 export type TaskFinished<T = unknown> = {

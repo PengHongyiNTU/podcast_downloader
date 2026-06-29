@@ -1,12 +1,14 @@
 use std::{
+    collections::VecDeque,
     path::{Path, PathBuf},
     process::Command,
+    sync::atomic::{AtomicU64, Ordering},
 };
 
 use podcast_downloader::{
-    AppErrorDto, AudioEncoderStatus, CheckSummary, DownloadBatchSummary, DownloadProgress,
-    EpisodeRecord, EpisodeStatus, FeedCheckSummary, FeedPreview, FeedSubscription, LibraryStats,
-    PodcastApp, PodcastSearchResult, config_file::FileConfig, logging,
+    AppErrorDto, AudioEncoderStatus, DeleteDownloadSummary, DownloadProgress, EpisodeRecord,
+    EpisodeStatus, FeedPreview, FeedSubscription, LibraryStats, PodcastApp, PodcastSearchResult,
+    config_file::FileConfig, logging,
 };
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -39,16 +41,73 @@ pub struct TaskFinished<T> {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskAccepted {
+    pub task_id: String,
+    pub name: String,
+    pub queued_position: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SaveSettingsResult {
     pub settings: FileConfig,
     pub stats: LibraryStats,
     pub encoder_status: AudioEncoderStatus,
 }
 
+#[derive(Debug)]
+enum BackgroundTask {
+    CheckFeed { id: String, feed_id: String },
+    CheckAll { id: String },
+    DownloadEpisodes { id: String, episode_ids: Vec<String> },
+}
+
+impl BackgroundTask {
+    fn id(&self) -> &str {
+        match self {
+            Self::CheckFeed { id, .. }
+            | Self::CheckAll { id }
+            | Self::DownloadEpisodes { id, .. } => id,
+        }
+    }
+
+    fn name(&self) -> &'static str {
+        match self {
+            Self::CheckFeed { .. } => "check_feed",
+            Self::CheckAll { .. } => "check_all",
+            Self::DownloadEpisodes { .. } => "download_episodes",
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+struct TaskQueueState {
+    active: Option<String>,
+    queued: VecDeque<BackgroundTask>,
+    worker_running: bool,
+}
+
+impl TaskQueueState {
+    fn enqueue(&mut self, task: BackgroundTask) -> (TaskAccepted, bool) {
+        let should_start_worker = !self.worker_running;
+        self.worker_running = true;
+        let accepted = TaskAccepted {
+            task_id: task.id().to_string(),
+            name: task.name().to_string(),
+            queued_position: self.queued.len() + 1,
+        };
+        self.queued.push_back(task);
+        (accepted, should_start_worker)
+    }
+
+    fn is_busy(&self) -> bool {
+        self.worker_running || self.active.is_some() || !self.queued.is_empty()
+    }
+}
+
 pub struct DesktopState {
     app: RwLock<PodcastApp>,
     config: Mutex<FileConfig>,
-    active_task: Mutex<Option<String>>,
+    task_queue: Mutex<TaskQueueState>,
     base_dir: PathBuf,
     config_path: PathBuf,
 }
@@ -64,7 +123,7 @@ impl DesktopState {
         Ok(Self {
             app: RwLock::new(app),
             config: Mutex::new(file_config),
-            active_task: Mutex::new(None),
+            task_queue: Mutex::new(TaskQueueState::default()),
             base_dir,
             config_path,
         })
@@ -87,21 +146,36 @@ impl DesktopState {
         })
     }
 
-    async fn begin_task(&self, name: &str) -> Result<(), AppErrorDto> {
-        let mut active = self.active_task.lock().await;
-        if let Some(active_name) = active.as_ref() {
-            return Err(AppErrorDto {
-                kind: "task_active".to_string(),
-                message: format!("{active_name} is already running"),
+    async fn enqueue_task(
+        &self,
+        app_handle: &AppHandle,
+        task: BackgroundTask,
+    ) -> Result<TaskAccepted, AppErrorDto> {
+        let (accepted, should_start_worker) = self.task_queue.lock().await.enqueue(task);
+        if should_start_worker {
+            let worker_handle = app_handle.clone();
+            tauri::async_runtime::spawn(async move {
+                run_background_worker(worker_handle).await;
             });
         }
-        *active = Some(name.to_string());
-        Ok(())
+        Ok(accepted)
     }
 
-    async fn end_task(&self) {
-        let mut active = self.active_task.lock().await;
-        *active = None;
+    async fn ensure_no_background_task(&self, operation: &str) -> Result<(), AppErrorDto> {
+        let queue = self.task_queue.lock().await;
+        if queue.is_busy() {
+            let active_name = queue
+                .active
+                .as_deref()
+                .unwrap_or_else(|| queue.queued.front().map(BackgroundTask::name).unwrap_or("task"));
+            return Err(AppErrorDto {
+                kind: "task_active".to_string(),
+                message: format!(
+                    "{operation} cannot run while {active_name} is active"
+                ),
+            });
+        }
+        Ok(())
     }
 }
 
@@ -143,18 +217,23 @@ async fn subscribe_feed(
     app_handle: AppHandle,
     state: State<'_, DesktopState>,
     feed_url: String,
-) -> Result<FeedCheckSummary, AppErrorDto> {
-    let task_name = "subscribe_feed";
-    state.begin_task(task_name).await?;
-    emit_task_started(&app_handle, task_name);
-    let result = subscribe_feed_inner(&app_handle, &state, feed_url).await;
-    emit_task_finished(&app_handle, task_name, result.clone());
-    state.end_task().await;
-    result
+) -> Result<TaskAccepted, AppErrorDto> {
+    let app = state.app().await;
+    let feed = app.add_feed(&feed_url).await.map_err(AppErrorDto::from)?;
+    state
+        .enqueue_task(
+            &app_handle,
+            BackgroundTask::CheckFeed {
+                id: next_task_id("check_feed"),
+                feed_id: feed.id,
+            },
+        )
+        .await
 }
 
 #[tauri::command]
 async fn remove_feed(state: State<'_, DesktopState>, feed_id: String) -> Result<(), AppErrorDto> {
+    state.ensure_no_background_task("remove_feed").await?;
     state
         .app()
         .await
@@ -168,36 +247,31 @@ async fn check_feed(
     app_handle: AppHandle,
     state: State<'_, DesktopState>,
     feed_id: String,
-) -> Result<FeedCheckSummary, AppErrorDto> {
-    let task_name = "check_feed";
-    state.begin_task(task_name).await?;
-    emit_task_started(&app_handle, task_name);
-    let app = state.app().await;
-    let result = app
-        .check_feed_with_progress(&feed_id, Some(progress_sender(app_handle.clone())))
+) -> Result<TaskAccepted, AppErrorDto> {
+    state
+        .enqueue_task(
+            &app_handle,
+            BackgroundTask::CheckFeed {
+                id: next_task_id("check_feed"),
+                feed_id,
+            },
+        )
         .await
-        .map_err(AppErrorDto::from);
-    emit_task_finished(&app_handle, task_name, result.clone());
-    state.end_task().await;
-    result
 }
 
 #[tauri::command]
 async fn check_all(
     app_handle: AppHandle,
     state: State<'_, DesktopState>,
-) -> Result<CheckSummary, AppErrorDto> {
-    let task_name = "check_all";
-    state.begin_task(task_name).await?;
-    emit_task_started(&app_handle, task_name);
-    let app = state.app().await;
-    let result = app
-        .check_all_with_progress(Some(progress_sender(app_handle.clone())))
+) -> Result<TaskAccepted, AppErrorDto> {
+    state
+        .enqueue_task(
+            &app_handle,
+            BackgroundTask::CheckAll {
+                id: next_task_id("check_all"),
+            },
+        )
         .await
-        .map_err(AppErrorDto::from);
-    emit_task_finished(&app_handle, task_name, result.clone());
-    state.end_task().await;
-    result
 }
 
 #[tauri::command]
@@ -227,18 +301,32 @@ async fn download_episodes(
     app_handle: AppHandle,
     state: State<'_, DesktopState>,
     episode_ids: Vec<String>,
-) -> Result<DownloadBatchSummary, AppErrorDto> {
-    let task_name = "download_episodes";
-    state.begin_task(task_name).await?;
-    emit_task_started(&app_handle, task_name);
-    let app = state.app().await;
-    let result = app
-        .download_episodes_with_progress(episode_ids, Some(progress_sender(app_handle.clone())))
+) -> Result<TaskAccepted, AppErrorDto> {
+    state
+        .enqueue_task(
+            &app_handle,
+            BackgroundTask::DownloadEpisodes {
+                id: next_task_id("download_episodes"),
+                episode_ids,
+            },
+        )
         .await
-        .map_err(AppErrorDto::from);
-    emit_task_finished(&app_handle, task_name, result.clone());
-    state.end_task().await;
-    result
+}
+
+#[tauri::command]
+async fn delete_downloaded_episode(
+    state: State<'_, DesktopState>,
+    episode_id: String,
+) -> Result<DeleteDownloadSummary, AppErrorDto> {
+    state
+        .ensure_no_background_task("delete_downloaded_episode")
+        .await?;
+    state
+        .app()
+        .await
+        .delete_downloaded_episode(&episode_id)
+        .await
+        .map_err(AppErrorDto::from)
 }
 
 #[tauri::command]
@@ -247,6 +335,9 @@ async fn set_feed_retention(
     feed_id: String,
     retention_limit: Option<u32>,
 ) -> Result<(), AppErrorDto> {
+    state
+        .ensure_no_background_task("set_feed_retention")
+        .await?;
     state
         .app()
         .await
@@ -265,11 +356,8 @@ async fn save_settings(
     state: State<'_, DesktopState>,
     config: FileConfig,
 ) -> Result<SaveSettingsResult, AppErrorDto> {
-    let task_name = "save_settings";
-    state.begin_task(task_name).await?;
-    let result = save_settings_inner(&state, config).await;
-    state.end_task().await;
-    result
+    state.ensure_no_background_task("save_settings").await?;
+    save_settings_inner(&state, config).await
 }
 
 #[tauri::command]
@@ -297,16 +385,57 @@ async fn open_downloads_folder(state: State<'_, DesktopState>) -> Result<(), App
     open_folder(&download_dir).map_err(AppErrorDto::from)
 }
 
-async fn subscribe_feed_inner(
-    app_handle: &AppHandle,
-    state: &DesktopState,
-    feed_url: String,
-) -> Result<FeedCheckSummary, AppErrorDto> {
-    let app = state.app().await;
-    let feed = app.add_feed(&feed_url).await.map_err(AppErrorDto::from)?;
-    app.check_feed_with_progress(&feed.id, Some(progress_sender(app_handle.clone())))
-        .await
-        .map_err(AppErrorDto::from)
+async fn run_background_worker(app_handle: AppHandle) {
+    loop {
+        let Some(state) = app_handle.try_state::<DesktopState>() else {
+            return;
+        };
+        let task = {
+            let mut queue = state.task_queue.lock().await;
+            let Some(task) = queue.queued.pop_front() else {
+                queue.active = None;
+                queue.worker_running = false;
+                return;
+            };
+            queue.active = Some(task.name().to_string());
+            task
+        };
+
+        let task_name = task.name();
+        emit_task_started(&app_handle, task_name);
+        match task {
+            BackgroundTask::CheckFeed { feed_id, .. } => {
+                let app = state.app().await;
+                let result = app
+                    .check_feed_with_progress(&feed_id, Some(progress_sender(app_handle.clone())))
+                    .await
+                    .map_err(AppErrorDto::from);
+                emit_task_finished(&app_handle, task_name, result);
+            }
+            BackgroundTask::CheckAll { .. } => {
+                let app = state.app().await;
+                let result = app
+                    .check_all_with_progress(Some(progress_sender(app_handle.clone())))
+                    .await
+                    .map_err(AppErrorDto::from);
+                emit_task_finished(&app_handle, task_name, result);
+            }
+            BackgroundTask::DownloadEpisodes { episode_ids, .. } => {
+                let app = state.app().await;
+                let result = app
+                    .download_episodes_with_progress(
+                        episode_ids,
+                        Some(progress_sender(app_handle.clone())),
+                    )
+                    .await
+                    .map_err(AppErrorDto::from);
+                emit_task_finished(&app_handle, task_name, result);
+            }
+        }
+
+        let mut queue = state.task_queue.lock().await;
+        queue.active = None;
+    }
 }
 
 async fn save_settings_inner(
@@ -388,6 +517,13 @@ where
     );
 }
 
+static NEXT_TASK_ID: AtomicU64 = AtomicU64::new(1);
+
+fn next_task_id(name: &str) -> String {
+    let id = NEXT_TASK_ID.fetch_add(1, Ordering::Relaxed);
+    format!("{name}-{id}")
+}
+
 fn app_base_dir(app: &tauri::App) -> PathBuf {
     app.path()
         .app_data_dir()
@@ -448,7 +584,14 @@ pub fn run() {
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 if let Some(state) = handle.try_state::<DesktopState>() {
-                    let _ = check_all(handle.clone(), state).await;
+                    let _ = state
+                        .enqueue_task(
+                            &handle,
+                            BackgroundTask::CheckAll {
+                                id: next_task_id("check_all"),
+                            },
+                        )
+                        .await;
                 }
             });
             Ok(())
@@ -464,6 +607,7 @@ pub fn run() {
             list_episodes,
             list_downloaded_episodes,
             download_episodes,
+            delete_downloaded_episode,
             set_feed_retention,
             get_settings,
             save_settings,
@@ -479,18 +623,47 @@ pub fn run() {
 mod tests {
     use super::*;
 
+    #[test]
+    fn task_queue_accepts_follow_up_work() {
+        let mut queue = TaskQueueState::default();
+
+        let (first, starts_worker) = queue.enqueue(BackgroundTask::CheckAll {
+            id: "check_all-1".to_string(),
+        });
+        let (second, starts_second_worker) = queue.enqueue(BackgroundTask::DownloadEpisodes {
+            id: "download_episodes-2".to_string(),
+            episode_ids: vec!["episode-1".to_string()],
+        });
+
+        assert!(starts_worker);
+        assert!(!starts_second_worker);
+        assert_eq!(first.name, "check_all");
+        assert_eq!(first.queued_position, 1);
+        assert_eq!(second.name, "download_episodes");
+        assert_eq!(second.queued_position, 2);
+        assert!(queue.is_busy());
+    }
+
     #[tokio::test]
-    async fn active_task_blocks_overlapping_work() {
+    async fn destructive_operations_are_guarded_while_background_task_is_busy() {
         let temp = tempfile::tempdir().unwrap();
         let state = DesktopState::new(temp.path().to_path_buf(), temp.path().join("config.toml"))
             .await
             .unwrap();
 
-        state.begin_task("check_all").await.unwrap();
-        let error = state.begin_task("download_episodes").await.unwrap_err();
+        {
+            let mut queue = state.task_queue.lock().await;
+            queue.worker_running = true;
+            queue.active = Some("download_episodes".to_string());
+        }
+
+        let error = state
+            .ensure_no_background_task("remove_feed")
+            .await
+            .unwrap_err();
+
         assert_eq!(error.kind, "task_active");
-        state.end_task().await;
-        state.begin_task("download_episodes").await.unwrap();
+        assert!(error.message.contains("download_episodes"));
     }
 
     #[tokio::test]

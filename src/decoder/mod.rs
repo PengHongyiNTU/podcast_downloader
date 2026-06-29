@@ -54,7 +54,8 @@ pub fn configured_encoder_path(config: &CoreConfig) -> PathBuf {
 
 pub async fn encoder_status(config: &CoreConfig) -> AudioEncoderStatus {
     let path = configured_encoder_path(config);
-    let output = Command::new(&path)
+    let mut command = hidden_command(&path);
+    let output = command
         .arg("-version")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -98,7 +99,8 @@ pub async fn convert_to_mp3(
         .map(Path::to_path_buf)
         .unwrap_or_else(|| PathBuf::from("ffmpeg"));
 
-    let output = Command::new(&encoder)
+    let mut command = hidden_command(&encoder);
+    let output = command
         .arg("-y")
         .arg("-i")
         .arg(input_path)
@@ -135,6 +137,21 @@ pub async fn convert_to_mp3(
 
     Ok(())
 }
+
+fn hidden_command(path: &Path) -> Command {
+    let mut command = Command::new(path);
+    hide_child_console(&mut command);
+    command
+}
+
+#[cfg(windows)]
+fn hide_child_console(command: &mut Command) {
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+    command.creation_flags(CREATE_NO_WINDOW);
+}
+
+#[cfg(not(windows))]
+fn hide_child_console(_command: &mut Command) {}
 
 #[cfg(test)]
 mod tests {

@@ -1,5 +1,6 @@
 use std::{
     collections::{HashMap, HashSet},
+    path::PathBuf,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -9,9 +10,10 @@ use tokio::sync::mpsc;
 
 use crate::{
     core::{
-        CheckSummary, CoreConfig, DownloadBatchSummary, DownloadProgress, EpisodePreview,
-        EpisodeRecord, EpisodeStatus, FeedCheckSummary, FeedPreview, FeedSubscription,
-        LibraryStats, PodcastError, PodcastSearchResult, Result, RetentionSummary,
+        CheckSummary, CoreConfig, DeleteDownloadSummary, DownloadBatchSummary, DownloadProgress,
+        EpisodePreview, EpisodeRecord, EpisodeStatus, FeedCheckSummary, FeedPreview,
+        FeedSubscription, LibraryStats, PodcastError, PodcastSearchResult, Result,
+        RetentionSummary,
     },
     db::Db,
     decoder, discovery,
@@ -25,6 +27,7 @@ pub struct PodcastApp {
     config: Arc<CoreConfig>,
     db: Db,
     client: reqwest::Client,
+    media_client: reqwest::Client,
 }
 
 impl PodcastApp {
@@ -39,10 +42,14 @@ impl PodcastApp {
             .timeout(config.http_timeout)
             .user_agent(config.user_agent.clone())
             .build()?;
+        let media_client = reqwest::Client::builder()
+            .user_agent(config.user_agent.clone())
+            .build()?;
         let app = Self {
             config: Arc::new(config),
             db,
             client,
+            media_client,
         };
         log::info!(
             "event=app.open {}",
@@ -196,22 +203,44 @@ impl PodcastApp {
     }
 
     pub async fn remove_feed(&self, feed_id: &str) -> Result<()> {
+        let started = Instant::now();
         log::warn!(
             "event=feed.remove.start {}",
             format_args!("feed_id={feed_id}")
         );
+        let feed = self
+            .db
+            .feed_by_id(feed_id)
+            .await?
+            .ok_or_else(|| PodcastError::NotFound(feed_id.to_string()))?;
+        let episodes = self.db.episodes_with_files_for_feed(feed_id).await?;
+        let mut files_deleted = 0;
+        for episode in &episodes {
+            if self.delete_episode_file(episode).await? {
+                files_deleted += 1;
+            }
+        }
         let result = self.db.remove_feed(feed_id).await;
         match &result {
             Ok(()) => {
                 log::warn!(
                     "event=feed.remove.finish {}",
-                    format_args!("feed_id={feed_id}")
+                    format_args!(
+                        "feed_id={feed_id} title={} files_deleted={} elapsed_ms={}",
+                        log_value(&feed.normalized_title),
+                        files_deleted,
+                        elapsed_ms(started.elapsed())
+                    )
                 );
             }
             Err(error) => {
                 log::error!(
                     "event=feed.remove.error {}",
-                    format_args!("feed_id={feed_id} error={}", log_value(&error.to_string()))
+                    format_args!(
+                        "feed_id={feed_id} error={} elapsed_ms={}",
+                        log_value(&error.to_string()),
+                        elapsed_ms(started.elapsed())
+                    )
                 );
             }
         }
@@ -232,6 +261,54 @@ impl PodcastApp {
 
     pub async fn list_episodes(&self, feed_id: &str) -> Result<Vec<EpisodeRecord>> {
         self.db.episodes_for_feed(feed_id).await
+    }
+
+    pub async fn delete_downloaded_episode(
+        &self,
+        episode_id: &str,
+    ) -> Result<DeleteDownloadSummary> {
+        let started = Instant::now();
+        log::warn!(
+            "event=episode.delete_download.start {}",
+            format_args!("episode_id={episode_id}")
+        );
+        let episode = self
+            .db
+            .episode_by_id(episode_id)
+            .await?
+            .ok_or_else(|| PodcastError::NotFound(episode_id.to_string()))?;
+
+        let mut summary = DeleteDownloadSummary {
+            requested: 1,
+            ..DeleteDownloadSummary::default()
+        };
+
+        if episode.status != EpisodeStatus::Downloaded {
+            log::info!(
+                "event=episode.delete_download.skip {}",
+                format_args!(
+                    "episode_id={episode_id} status={} elapsed_ms={}",
+                    episode.status.as_str(),
+                    elapsed_ms(started.elapsed())
+                )
+            );
+            return Ok(summary);
+        }
+
+        if self.delete_episode_file(&episode).await? {
+            summary.files_deleted = 1;
+        }
+        self.db.mark_episode_deleted(episode_id).await?;
+        summary.deleted = 1;
+        log::warn!(
+            "event=episode.delete_download.finish {}",
+            format_args!(
+                "episode_id={episode_id} files_deleted={} elapsed_ms={}",
+                summary.files_deleted,
+                elapsed_ms(started.elapsed())
+            )
+        );
+        Ok(summary)
     }
 
     pub async fn refresh_feed_metadata(&self, feed_id: &str) -> Result<FeedSubscription> {
@@ -711,6 +788,34 @@ impl PodcastApp {
         Ok(summary)
     }
 
+    async fn delete_episode_file(&self, episode: &EpisodeRecord) -> Result<bool> {
+        let Some(file_path) = episode.file_path.as_deref() else {
+            return Ok(false);
+        };
+        let stored_path = PathBuf::from(file_path);
+        let path = if stored_path.is_absolute() {
+            stored_path
+        } else {
+            self.config.download_dir.join(stored_path)
+        };
+
+        let canonical_file = match tokio::fs::canonicalize(&path).await {
+            Ok(path) => path,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(error) => return Err(PodcastError::Io(error)),
+        };
+        let canonical_download_dir = tokio::fs::canonicalize(&self.config.download_dir).await?;
+        if !canonical_file.starts_with(&canonical_download_dir) {
+            return Err(PodcastError::InvalidConfig(format!(
+                "refusing to delete file outside download directory: {}",
+                canonical_file.display()
+            )));
+        }
+
+        tokio::fs::remove_file(&canonical_file).await?;
+        Ok(true)
+    }
+
     async fn fetch_and_parse(&self, feed_url: &str) -> Result<ParsedFeed> {
         let started = Instant::now();
         log::info!("event=feed.fetch.start {}", format_args!("url={feed_url}"));
@@ -1079,7 +1184,8 @@ impl PodcastApp {
                 log_value(&job.episode.normalized_title)
             )
         );
-        match download_job_with_progress(&self.config, &self.db, &self.client, &job, progress).await
+        match download_job_with_progress(&self.config, &self.db, &self.media_client, &job, progress)
+            .await
         {
             Ok(_) => {
                 log::info!(

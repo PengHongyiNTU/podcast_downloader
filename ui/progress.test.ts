@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { applyProgress, initialProgress, progressRatio, taskFinished, taskStarted } from "./progress";
+import {
+  aggregateProgressRatio,
+  applyProgress,
+  initialProgress,
+  progressRatio,
+  progressStatus,
+  taskFinished,
+  taskStarted,
+} from "./progress";
 
 describe("progress reducer", () => {
   it("tracks queue, current download, and completion", () => {
@@ -21,6 +29,8 @@ describe("progress reducer", () => {
 
     expect(state.queueCount).toBe(1);
     expect(progressRatio(state.current)).toBe(0.5);
+    expect(aggregateProgressRatio(state)).toBe(0.5);
+    expect(progressStatus(state).kind).toBe("downloading");
 
     state = applyProgress(state, {
       type: "download_finished",
@@ -34,5 +44,7 @@ describe("progress reducer", () => {
     expect(state.queueCount).toBe(0);
     expect(state.doneCount).toBe(1);
     expect(state.activeTask).toBeUndefined();
+    expect(aggregateProgressRatio(state)).toBe(1);
+    expect(progressStatus(state).kind).toBe("complete");
   });
 });

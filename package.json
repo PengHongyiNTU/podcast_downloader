@@ -5,6 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1 --port 1420",
+    "build:tui": "node scripts/build-tui-sidecar.mjs",
+    "build:bundle-input": "pnpm build:tui && pnpm build",
     "build": "tsc && vite build",
     "preview": "vite preview",
     "test": "vitest run",

@@ -8,10 +8,13 @@ import {
   Home,
   Library,
   Loader2,
+  Monitor,
   Mic2,
+  Moon,
   RefreshCw,
   Search,
   Settings,
+  Sun,
   Trash2,
 } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useState } from "react";
@@ -22,10 +25,17 @@ import {
   Card,
   CardContent,
   CardDescription,
-  CardFooter,
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -34,9 +44,10 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { cn } from "@/lib/utils";
 import { api } from "./api";
 import {
+  aggregateProgressRatio,
   applyProgress,
   initialProgress,
-  progressRatio,
+  progressStatus,
   taskFinished,
   taskStarted,
   type ProgressModel,
@@ -59,6 +70,7 @@ import type {
 } from "./types";
 
 type View = "home" | "watched" | "search" | "downloads" | "settings";
+type ThemeMode = "system" | "light" | "dark";
 type EpisodeMap = Record<string, EpisodeRecord[]>;
 
 const navItems: Array<{ id: View; label: string; icon: typeof Home }> = [
@@ -88,9 +100,14 @@ export function App() {
   const [progress, setProgress] = useState<ProgressModel>(initialProgress);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("Loading library");
+  const [themeMode, setThemeMode] = useState<ThemeMode>(() => readThemeMode());
 
   const selectedFeed = feeds.find((feed) => feed.id === selectedFeedId) ?? feeds[0];
   const selectedEpisodes = selectedFeed ? episodes[selectedFeed.id] ?? [] : [];
+
+  useEffect(() => {
+    applyThemeMode(themeMode);
+  }, [themeMode]);
 
   useEffect(() => {
     void loadSnapshot();
@@ -162,6 +179,22 @@ export function App() {
     }
   }
 
+  async function queueAction<T extends { queued_position: number }>(
+    action: () => Promise<T>,
+    success: string,
+  ) {
+    try {
+      const accepted = await action();
+      const suffix =
+        accepted.queued_position > 1
+          ? ` (position ${accepted.queued_position})`
+          : "";
+      setMessage(`${success}${suffix}`);
+    } catch (error) {
+      setMessage(errorMessage(error));
+    }
+  }
+
   async function submitSearch(event: FormEvent) {
     event.preventDefault();
     if (!query.trim()) return;
@@ -181,10 +214,12 @@ export function App() {
 
   async function subscribe(result: PodcastSearchResult) {
     if (!result.feed_url) return;
-    await runAction(async () => {
-      await api.subscribeFeed(result.feed_url!);
+    await queueAction(async () => {
+      const accepted = await api.subscribeFeed(result.feed_url!);
+      await loadSnapshot();
       setView("watched");
-    }, `Subscribed to ${result.title}`);
+      return accepted;
+    }, `Added ${result.title}; first check queued`);
   }
 
   async function togglePreview(result: PodcastSearchResult) {
@@ -207,11 +242,15 @@ export function App() {
   }
 
   async function downloadEpisode(episodeId: string) {
-    await runAction(() => api.downloadEpisodes([episodeId]), "Download queued");
+    await queueAction(() => api.downloadEpisodes([episodeId]), "Download queued");
+  }
+
+  async function deleteDownloadedEpisode(episodeId: string) {
+    await runAction(() => api.deleteDownloadedEpisode(episodeId), "Download deleted");
   }
 
   async function syncAll() {
-    await runAction(() => api.checkAll(), "All feeds checked");
+    await queueAction(() => api.checkAll(), "Sync queued");
   }
 
   async function saveConfig(config: FileConfig) {
@@ -236,7 +275,16 @@ export function App() {
   return (
     <TooltipProvider>
       <div className="app-shell bg-background">
-        <Sidebar stats={stats} view={view} onView={setView} />
+        <Sidebar
+          stats={stats}
+          themeMode={themeMode}
+          view={view}
+          onThemeMode={(mode) => {
+            setThemeMode(mode);
+            localStorage.setItem("podcast.theme", mode);
+          }}
+          onView={setView}
+        />
         <main className="content-scroll">
           <div className="mx-auto flex min-h-full w-full max-w-[1480px] flex-col gap-6 px-6 py-6 lg:px-8">
             <TopBar
@@ -265,13 +313,13 @@ export function App() {
                 episodes={selectedEpisodes}
                 defaultRetention={settings?.default_retention_limit ?? 4}
                 onSelect={setSelectedFeedId}
-                onCheck={(feedId) => runAction(() => api.checkFeed(feedId), "Feed checked")}
+                onCheck={(feedId) => queueAction(() => api.checkFeed(feedId), "Feed check queued")}
                 onDownload={downloadEpisode}
                 onRemove={(feedId) =>
                   runAction(async () => {
                     await api.removeFeed(feedId);
                     setSelectedFeedId(null);
-                  }, "Podcast removed")
+                  }, "Podcast removed and downloads deleted")
                 }
                 onRetention={(feedId, limit) =>
                   runAction(() => api.setFeedRetention(feedId, limit), "Retention updated")
@@ -290,12 +338,14 @@ export function App() {
                 onSubmit={submitSearch}
                 onSubscribe={subscribe}
                 onTogglePreview={togglePreview}
+                onClosePreview={() => setExpandedResult(null)}
               />
             )}
             {view === "downloads" && (
               <DownloadsView
                 downloads={downloadedEpisodes}
                 progress={progress}
+                onDelete={deleteDownloadedEpisode}
                 onOpenFolder={openDownloadsFolder}
               />
             )}
@@ -317,13 +367,20 @@ export function App() {
 
 function Sidebar({
   stats,
+  themeMode,
   view,
+  onThemeMode,
   onView,
 }: {
   stats: LibraryStats;
+  themeMode: ThemeMode;
   view: View;
+  onThemeMode: (mode: ThemeMode) => void;
   onView: (view: View) => void;
 }) {
+  const nextThemeMode = themeMode === "system" ? "light" : themeMode === "light" ? "dark" : "system";
+  const ThemeIcon = themeMode === "system" ? Monitor : themeMode === "light" ? Sun : Moon;
+
   return (
     <aside className="row-span-2 flex min-w-0 flex-col gap-6 border-r bg-muted/45 p-4">
       <div className="flex items-center gap-3 px-2">
@@ -363,7 +420,22 @@ function Sidebar({
         })}
       </nav>
 
-      <Card className="mt-auto max-[980px]:hidden">
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button
+            type="button"
+            variant="ghost"
+            className="mt-auto justify-start gap-3 px-3 max-[980px]:justify-center max-[980px]:px-0"
+            onClick={() => onThemeMode(nextThemeMode)}
+          >
+            <ThemeIcon size={18} />
+            <span className="capitalize max-[980px]:hidden">{themeMode}</span>
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent side="right">Theme: {themeMode}</TooltipContent>
+      </Tooltip>
+
+      <Card className="max-[980px]:hidden">
         <CardContent className="grid gap-1 p-4 text-sm">
           <span className="text-muted-foreground">{stats.episodes} episodes</span>
           <strong>{stats.downloaded} downloaded</strong>
@@ -581,6 +653,7 @@ export function SearchView({
   onSubmit,
   onSubscribe,
   onTogglePreview,
+  onClosePreview,
 }: {
   query: string;
   results: PodcastSearchResult[];
@@ -592,7 +665,12 @@ export function SearchView({
   onSubmit: (event: FormEvent) => void;
   onSubscribe: (result: PodcastSearchResult) => void;
   onTogglePreview: (result: PodcastSearchResult) => void;
+  onClosePreview: () => void;
 }) {
+  const selectedResult = results.find((result) => resultKey(result) === expandedResult);
+  const selectedKey = selectedResult ? resultKey(selectedResult) : null;
+  const selectedPreview = selectedKey ? previews[selectedKey] : undefined;
+
   return (
     <section className="grid gap-5">
       <form className="flex items-center gap-2 rounded-xl border bg-card p-2 shadow-sm" onSubmit={onSubmit}>
@@ -612,10 +690,8 @@ export function SearchView({
       <div className="grid gap-4 md:grid-cols-2 2xl:grid-cols-3">
         {results.map((result) => {
           const key = resultKey(result);
-          const preview = previews[key];
-          const expanded = expandedResult === key;
           return (
-            <Card key={key} className={cn("overflow-hidden", expanded && "md:col-span-2 2xl:col-span-2")}>
+            <Card key={key} className="overflow-hidden">
               <CardContent className="grid h-full gap-4 p-4">
                 <button
                   className="grid grid-cols-[112px_minmax(0,1fr)_auto] gap-4 text-left"
@@ -630,7 +706,7 @@ export function SearchView({
                       {result.feed_url ? "RSS available" : "No RSS source"}
                     </Badge>
                   </div>
-                  <ChevronDown className={cn("mt-1 size-4 text-muted-foreground transition-transform", expanded && "rotate-180")} />
+                  <ChevronDown className="mt-1 size-4 text-muted-foreground" />
                 </button>
 
                 <div className="mt-auto grid grid-cols-2 gap-2">
@@ -647,13 +723,58 @@ export function SearchView({
                     Subscribe
                   </Button>
                 </div>
-
-                {expanded && <SearchPreview preview={preview} loading={previewLoading === key} />}
               </CardContent>
             </Card>
           );
         })}
       </div>
+
+      <Dialog open={Boolean(selectedResult)} onOpenChange={(open) => !open && onClosePreview()}>
+        <DialogContent className="max-h-[86vh] max-w-3xl overflow-hidden p-0">
+          {selectedResult && selectedKey && (
+            <>
+              <DialogHeader className="grid gap-4 border-b p-6 text-left sm:grid-cols-[128px_minmax(0,1fr)]">
+                <PodcastArtwork
+                  title={selectedResult.title}
+                  url={selectedPreview?.artwork_url ?? selectedResult.artwork_url}
+                  size="lg"
+                />
+                <div className="min-w-0">
+                  <DialogTitle className="line-clamp-2 text-2xl">
+                    {selectedPreview?.normalized_title ?? selectedResult.title}
+                  </DialogTitle>
+                  <DialogDescription className="mt-2">
+                    {selectedResult.author ?? "Unknown author"}
+                  </DialogDescription>
+                  <div className="mt-4 flex flex-wrap gap-2">
+                    <Badge variant={selectedResult.feed_url ? "secondary" : "outline"}>
+                      {selectedResult.feed_url ? "RSS available" : "No RSS source"}
+                    </Badge>
+                    {selectedPreview && <Badge variant="outline">{selectedPreview.episodes.length} episodes</Badge>}
+                  </div>
+                </div>
+              </DialogHeader>
+              <ScrollArea className="max-h-[52vh]">
+                <div className="p-6">
+                  <SearchPreview preview={selectedPreview} loading={previewLoading === selectedKey} />
+                </div>
+              </ScrollArea>
+              <DialogFooter className="border-t p-4">
+                <Button variant="secondary" type="button" onClick={onClosePreview}>
+                  Close
+                </Button>
+                <Button
+                  type="button"
+                  disabled={!selectedResult.feed_url}
+                  onClick={() => onSubscribe(selectedResult)}
+                >
+                  Subscribe
+                </Button>
+              </DialogFooter>
+            </>
+          )}
+        </DialogContent>
+      </Dialog>
     </section>
   );
 }
@@ -677,7 +798,7 @@ function SearchPreview({ preview, loading }: { preview?: FeedPreview; loading: b
     );
   }
   return (
-    <div className="grid gap-4 border-t pt-4">
+    <div className="grid gap-4">
       <p className="line-clamp-3 text-sm leading-6 text-muted-foreground">
         {preview.description ?? preview.site_url ?? preview.feed_url}
       </p>
@@ -705,10 +826,12 @@ function PreviewEpisodeRow({ episode }: { episode: EpisodePreview }) {
 function DownloadsView({
   downloads,
   progress,
+  onDelete,
   onOpenFolder,
 }: {
   downloads: DownloadedEpisode[];
   progress: ProgressModel;
+  onDelete: (episodeId: string) => void;
   onOpenFolder: () => void;
 }) {
   const feedsById = useMemo(
@@ -730,7 +853,11 @@ function DownloadsView({
       <MonitorBar progress={progress} />
       <Card>
         <CardContent className="p-4">
-          <EpisodeList episodes={downloads.map((item) => item.episode)} feedsById={feedsById} />
+          <EpisodeList
+            episodes={downloads.map((item) => item.episode)}
+            feedsById={feedsById}
+            onDelete={onDelete}
+          />
         </CardContent>
       </Card>
     </section>
@@ -803,23 +930,53 @@ function SettingsView({
 }
 
 function MonitorBar({ progress, compact = false }: { progress: ProgressModel; compact?: boolean }) {
-  const ratio = Math.round(progressRatio(progress.current) * 100);
+  const status = progressStatus(progress);
+  const ratio = Math.round(aggregateProgressRatio(progress) * 100);
+  const running =
+    status.kind === "syncing" ||
+    status.kind === "downloading" ||
+    status.kind === "converting" ||
+    status.kind === "working";
+  const icon =
+    status.kind === "syncing" || status.kind === "downloading" || status.kind === "converting" || status.kind === "working" ? (
+      <Loader2 className="size-4 animate-spin text-primary" />
+    ) : status.kind === "failed" ? (
+      <Download className="size-4 text-destructive" />
+    ) : (
+      <CheckCircle2 className="size-4 text-emerald-500" />
+    );
+
   return (
     <Card className={cn(compact && "col-start-2 rounded-none border-x-0 border-b-0 max-[980px]:col-start-2")}>
-      <CardContent className={cn("grid gap-3 p-4", compact ? "md:grid-cols-[1fr_110px_2fr]" : "md:grid-cols-[1fr_120px_2fr]")}>
-        <div className="flex min-w-0 items-center gap-2 text-sm">
-          {progress.syncingFeed ? <Loader2 className="size-4 animate-spin text-primary" /> : <CheckCircle2 className="size-4 text-emerald-500" />}
-          <span className="truncate">{progress.syncingFeed ?? "Sync idle"}</span>
+      <CardContent
+        className={cn(
+          "grid items-center gap-3 p-4",
+          compact ? "grid-cols-[auto_minmax(120px,180px)_minmax(0,1fr)_auto]" : "md:grid-cols-[auto_minmax(140px,200px)_minmax(0,1fr)_auto]",
+        )}
+      >
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <div className="flex size-8 items-center justify-center rounded-full bg-muted">
+              {icon}
+            </div>
+          </TooltipTrigger>
+          <TooltipContent>{status.detail}</TooltipContent>
+        </Tooltip>
+        <div className="min-w-0">
+          <div className="truncate text-sm font-medium">{status.label}</div>
+          {!compact && <div className="truncate text-xs text-muted-foreground">{status.detail}</div>}
         </div>
-        <Badge variant="secondary" className="w-fit">Queue {progress.queueCount}</Badge>
-        <div className="grid min-w-0 gap-2">
-          <div className="truncate text-sm text-muted-foreground">
-            {progress.current
-              ? `${progress.current.status} ${progress.current.title}`
-              : `${progress.doneCount} done, ${progress.failedCount} failed`}
-          </div>
-          <Progress value={ratio} />
+        <div className="grid min-w-0 gap-1.5">
+          <Progress value={status.kind === "idle" ? 0 : ratio} className={cn(!running && status.kind === "idle" && "opacity-35")} />
+          {!compact && (
+            <div className="text-xs text-muted-foreground">
+              {status.total > 0 ? `${status.completed}/${status.total} tasks complete` : "No pending task"}
+            </div>
+          )}
         </div>
+        <Badge variant={status.kind === "failed" ? "destructive" : status.kind === "complete" ? "success" : "secondary"}>
+          {running ? `${ratio}%` : status.kind === "complete" ? "Done" : status.kind === "failed" ? "Error" : "Ready"}
+        </Badge>
       </CardContent>
     </Card>
   );
@@ -828,10 +985,12 @@ function MonitorBar({ progress, compact = false }: { progress: ProgressModel; co
 function EpisodeList({
   episodes,
   feedsById = {},
+  onDelete,
   onDownload,
 }: {
   episodes: EpisodeRecord[];
   feedsById?: Record<string, FeedSubscription>;
+  onDelete?: (episodeId: string) => void;
   onDownload?: (episodeId: string) => void;
 }) {
   if (!episodes.length) {
@@ -844,6 +1003,7 @@ function EpisodeList({
           episode={episode}
           feed={feedsById[episode.feed_id]}
           key={episode.id}
+          onDelete={onDelete}
           onDownload={onDownload}
         />
       ))}
@@ -854,10 +1014,12 @@ function EpisodeList({
 function EpisodeRow({
   episode,
   feed,
+  onDelete,
   onDownload,
 }: {
   episode: EpisodeRecord;
   feed?: FeedSubscription;
+  onDelete?: (episodeId: string) => void;
   onDownload?: (episodeId: string) => void;
 }) {
   return (
@@ -874,6 +1036,11 @@ function EpisodeRow({
       {onDownload && episode.status !== "downloaded" && episode.status !== "deleted" && (
         <Button type="button" size="icon" variant="secondary" onClick={() => onDownload(episode.id)}>
           <Download />
+        </Button>
+      )}
+      {onDelete && episode.status === "downloaded" && (
+        <Button type="button" size="icon" variant="destructive" onClick={() => onDelete(episode.id)}>
+          <Trash2 />
         </Button>
       )}
     </div>
@@ -944,7 +1111,7 @@ function PodcastArtwork({
     <div
       className={cn(
         sizeClass,
-        "grid shrink-0 place-items-center bg-gradient-to-br from-pink-200 to-orange-200 font-bold text-pink-800 shadow-sm",
+        "grid shrink-0 place-items-center bg-gradient-to-br from-sky-100 to-slate-200 font-bold text-slate-700 shadow-sm dark:from-slate-700 dark:to-slate-800 dark:text-slate-200",
         className,
       )}
     >
@@ -1010,6 +1177,17 @@ function titleForView(view: View, feed?: FeedSubscription) {
     downloads: "Downloads",
     settings: "Settings",
   }[view];
+}
+
+function readThemeMode(): ThemeMode {
+  if (typeof localStorage === "undefined") return "system";
+  const stored = localStorage.getItem("podcast.theme");
+  return stored === "light" || stored === "dark" || stored === "system" ? stored : "system";
+}
+
+function applyThemeMode(mode: ThemeMode) {
+  document.documentElement.classList.toggle("light", mode === "light");
+  document.documentElement.classList.toggle("dark", mode === "dark");
 }
 
 function resultKey(result: PodcastSearchResult) {

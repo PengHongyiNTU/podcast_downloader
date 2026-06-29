@@ -1,10 +1,10 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { SearchView } from "./App";
 import type { FeedPreview, PodcastSearchResult } from "./types";
 
 describe("SearchView", () => {
-  it("expands a result card with feed details and recent episodes", () => {
+  it("opens a details dialog with feed details and recent episodes", () => {
     const result: PodcastSearchResult = {
       title: "Example Podcast",
       author: "Example Author",
@@ -45,13 +45,14 @@ describe("SearchView", () => {
         onSubmit={vi.fn()}
         onSubscribe={vi.fn()}
         onTogglePreview={vi.fn()}
+        onClosePreview={vi.fn()}
       />,
     );
 
-    expect(screen.getByText("Example Podcast")).toBeTruthy();
-    expect(screen.getByText("A compact podcast preview.")).toBeTruthy();
-    expect(screen.getByText("Episode One")).toBeTruthy();
-    expect(screen.getByRole("button", { name: /details/i })).toBeTruthy();
-    expect(screen.getByRole("button", { name: /subscribe/i })).toBeTruthy();
+    const dialog = screen.getByRole("dialog");
+    expect(within(dialog).getByText("Example Podcast")).toBeTruthy();
+    expect(within(dialog).getByText("A compact podcast preview.")).toBeTruthy();
+    expect(within(dialog).getByText("Episode One")).toBeTruthy();
+    expect(within(dialog).getByRole("button", { name: /subscribe/i })).toBeTruthy();
   });
 });

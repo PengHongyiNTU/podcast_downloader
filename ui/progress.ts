@@ -156,3 +156,117 @@ export function progressRatio(item?: ProgressItem): number {
   }
   return Math.min(1, item.downloadedBytes / item.totalBytes);
 }
+
+export function aggregateProgressRatio(state: ProgressModel): number {
+  const items = Object.values(state.items);
+  if (!items.length) {
+    return 0;
+  }
+
+  const total = items.reduce((sum, item) => {
+    if (item.status === "done" || item.status === "failed") {
+      return sum + 1;
+    }
+    if (item.status === "converting") {
+      return sum + 0.94;
+    }
+    if (item.status === "downloading") {
+      return sum + progressRatio(item);
+    }
+    return sum;
+  }, 0);
+
+  return Math.min(1, total / items.length);
+}
+
+export function progressStatus(state: ProgressModel) {
+  const items = Object.values(state.items);
+  const total = items.length;
+  const converting = items.filter((item) => item.status === "converting").length;
+  const downloading = items.filter((item) => item.status === "downloading").length;
+  const queued = items.filter((item) => item.status === "queued").length;
+  const completed = items.filter((item) => item.status === "done" || item.status === "failed").length;
+
+  if (state.syncingFeed) {
+    return {
+      kind: "syncing" as const,
+      label: "Syncing",
+      detail: state.syncingFeed,
+      total,
+      completed,
+      converting,
+      downloading,
+      queued,
+    };
+  }
+  if (converting > 0) {
+    return {
+      kind: "converting" as const,
+      label: "Converting",
+      detail: `${converting} file${converting === 1 ? "" : "s"}`,
+      total,
+      completed,
+      converting,
+      downloading,
+      queued,
+    };
+  }
+  if (downloading > 0) {
+    return {
+      kind: "downloading" as const,
+      label: "Downloading",
+      detail: `${completed}/${total} complete`,
+      total,
+      completed,
+      converting,
+      downloading,
+      queued,
+    };
+  }
+  if (queued > 0 || state.activeTask) {
+    return {
+      kind: "working" as const,
+      label: "Working",
+      detail: total ? `${completed}/${total} complete` : "Preparing",
+      total,
+      completed,
+      converting,
+      downloading,
+      queued,
+    };
+  }
+  if (state.failedCount > 0) {
+    return {
+      kind: "failed" as const,
+      label: "Finished with errors",
+      detail: `${state.failedCount} failed`,
+      total,
+      completed,
+      converting,
+      downloading,
+      queued,
+    };
+  }
+  if (state.doneCount > 0) {
+    return {
+      kind: "complete" as const,
+      label: "Complete",
+      detail: `${state.doneCount} done`,
+      total,
+      completed,
+      converting,
+      downloading,
+      queued,
+    };
+  }
+  return {
+    kind: "idle" as const,
+    label: "Ready",
+    detail: "No active work",
+    total,
+    completed,
+    converting,
+    downloading,
+    queued,
+  };
+}

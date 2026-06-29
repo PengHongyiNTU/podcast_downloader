@@ -270,6 +270,14 @@ pub struct DownloadBatchSummary {
     pub errors: Vec<String>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeleteDownloadSummary {
+    pub requested: usize,
+    pub deleted: usize,
+    pub files_deleted: usize,
+    pub errors: Vec<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DownloadFailure {
     pub feed_id: String,

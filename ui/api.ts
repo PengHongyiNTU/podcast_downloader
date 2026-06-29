@@ -1,16 +1,15 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   AudioEncoderStatus,
-  CheckSummary,
-  DownloadBatchSummary,
+  DeleteDownloadSummary,
   DownloadedEpisode,
   EpisodeRecord,
-  FeedCheckSummary,
   FeedPreview,
   FileConfig,
   InitialSnapshot,
   PodcastSearchResult,
   SaveSettingsResult,
+  TaskAccepted,
 } from "./types";
 
 export const api = {
@@ -20,15 +19,17 @@ export const api = {
   previewFeed: (feedUrl: string) =>
     invoke<FeedPreview>("preview_feed", { feedUrl }),
   subscribeFeed: (feedUrl: string) =>
-    invoke<FeedCheckSummary>("subscribe_feed", { feedUrl }),
+    invoke<TaskAccepted>("subscribe_feed", { feedUrl }),
   removeFeed: (feedId: string) => invoke<void>("remove_feed", { feedId }),
-  checkFeed: (feedId: string) => invoke<FeedCheckSummary>("check_feed", { feedId }),
-  checkAll: () => invoke<CheckSummary>("check_all"),
+  checkFeed: (feedId: string) => invoke<TaskAccepted>("check_feed", { feedId }),
+  checkAll: () => invoke<TaskAccepted>("check_all"),
   listEpisodes: (feedId: string) => invoke<EpisodeRecord[]>("list_episodes", { feedId }),
   listDownloadedEpisodes: () =>
     invoke<DownloadedEpisode[]>("list_downloaded_episodes"),
   downloadEpisodes: (episodeIds: string[]) =>
-    invoke<DownloadBatchSummary>("download_episodes", { episodeIds }),
+    invoke<TaskAccepted>("download_episodes", { episodeIds }),
+  deleteDownloadedEpisode: (episodeId: string) =>
+    invoke<DeleteDownloadSummary>("delete_downloaded_episode", { episodeId }),
   setFeedRetention: (feedId: string, retentionLimit: number | null) =>
     invoke<void>("set_feed_retention", { feedId, retentionLimit }),
   getSettings: () => invoke<FileConfig>("get_settings"),
