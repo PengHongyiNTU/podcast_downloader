@@ -1,8 +1,8 @@
 mod common;
 
 use podcast_downloader::{
-    AppErrorDto, CoreConfig, DownloadBatchSummary, DownloadProgress, EpisodeStatus, PodcastApp,
-    PodcastError, logging,
+    AppErrorDto, CoreConfig, DownloadBatchSummary, DownloadProgress, EpisodePreview, EpisodeStatus,
+    FeedPreview, PodcastApp, PodcastError, logging,
 };
 
 #[tokio::test]
@@ -125,4 +125,26 @@ fn frontend_dtos_are_json_serializable() {
     let error_json = serde_json::to_string(&error).unwrap();
     assert!(error_json.contains("\"kind\":\"not_found\""));
     assert!(error_json.contains("episode"));
+
+    let preview = FeedPreview {
+        feed_url: "https://example.test/feed.xml".to_string(),
+        raw_title: "Raw Show".to_string(),
+        normalized_title: "Raw Show".to_string(),
+        site_url: None,
+        description: Some("A show".to_string()),
+        artwork_url: None,
+        episodes: vec![EpisodePreview {
+            episode_key: "episode-key".to_string(),
+            raw_title: "Raw Episode".to_string(),
+            normalized_title: "Raw Episode".to_string(),
+            raw_author: None,
+            published_at: None,
+            media_url: "https://example.test/episode.mp3".to_string(),
+            media_content_type: Some("audio/mpeg".to_string()),
+            media_length_bytes: Some(100),
+        }],
+    };
+    let preview_json = serde_json::to_string(&preview).unwrap();
+    assert!(preview_json.contains("\"feed_url\""));
+    assert!(preview_json.contains("\"episode_key\""));
 }

@@ -15,6 +15,7 @@ mod retention;
 pub use app::PodcastApp;
 pub use core::{
     AppErrorDto, AudioEncoderStatus, CheckSummary, CoreConfig, DownloadBatchSummary,
-    DownloadFailure, DownloadProgress, EpisodeRecord, EpisodeStatus, FeedCheckSummary,
-    FeedSubscription, LibraryStats, PodcastError, PodcastSearchResult, Result, RetentionSummary,
+    DownloadFailure, DownloadProgress, EpisodePreview, EpisodeRecord, EpisodeStatus,
+    FeedCheckSummary, FeedPreview, FeedSubscription, LibraryStats, PodcastError,
+    PodcastSearchResult, Result, RetentionSummary,
 };

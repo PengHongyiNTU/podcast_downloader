@@ -131,6 +131,29 @@ pub struct PodcastSearchResult {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FeedPreview {
+    pub feed_url: String,
+    pub raw_title: String,
+    pub normalized_title: String,
+    pub site_url: Option<String>,
+    pub description: Option<String>,
+    pub artwork_url: Option<String>,
+    pub episodes: Vec<EpisodePreview>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EpisodePreview {
+    pub episode_key: String,
+    pub raw_title: String,
+    pub normalized_title: String,
+    pub raw_author: Option<String>,
+    pub published_at: Option<String>,
+    pub media_url: String,
+    pub media_content_type: Option<String>,
+    pub media_length_bytes: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FeedSubscription {
     pub id: String,
     pub feed_url: String,

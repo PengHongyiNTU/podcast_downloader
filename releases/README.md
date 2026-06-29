@@ -1,7 +1,17 @@
 # Releases
 
-Compiled builds should be published through GitHub Releases or another release host.
+This folder is for local release staging notes only.
 
-This folder is reserved for local staging notes only. Do not commit generated binaries,
-installers, archives, or checksums here.
+Generated installers and archives are ignored by git. Build fresh installers with:
 
+```powershell
+pnpm tauri build
+```
+
+The canonical build output is:
+
+```text
+src-tauri/target/release/bundle/
+```
+
+For manual local testing, copy installers here with simplified filenames, but do not commit them.

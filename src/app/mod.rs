@@ -9,9 +9,9 @@ use tokio::sync::mpsc;
 
 use crate::{
     core::{
-        CheckSummary, CoreConfig, DownloadBatchSummary, DownloadProgress, EpisodeRecord,
-        EpisodeStatus, FeedCheckSummary, FeedSubscription, LibraryStats, PodcastError,
-        PodcastSearchResult, Result, RetentionSummary,
+        CheckSummary, CoreConfig, DownloadBatchSummary, DownloadProgress, EpisodePreview,
+        EpisodeRecord, EpisodeStatus, FeedCheckSummary, FeedPreview, FeedSubscription,
+        LibraryStats, PodcastError, PodcastSearchResult, Result, RetentionSummary,
     },
     db::Db,
     decoder, discovery,
@@ -97,6 +97,32 @@ impl PodcastApp {
             }
         }
         result
+    }
+
+    pub async fn preview_feed(&self, feed_url: &str) -> Result<FeedPreview> {
+        let parsed = self.fetch_and_parse(feed_url).await?;
+        Ok(FeedPreview {
+            feed_url: feed_url.to_string(),
+            raw_title: parsed.raw_title,
+            normalized_title: parsed.normalized_title,
+            site_url: parsed.site_url,
+            description: parsed.description,
+            artwork_url: parsed.artwork_url,
+            episodes: parsed
+                .episodes
+                .into_iter()
+                .map(|episode| EpisodePreview {
+                    episode_key: episode.episode_key,
+                    raw_title: episode.raw_title,
+                    normalized_title: episode.normalized_title,
+                    raw_author: episode.raw_author,
+                    published_at: episode.published_at,
+                    media_url: episode.media_url,
+                    media_content_type: episode.media_content_type,
+                    media_length_bytes: episode.media_length_bytes,
+                })
+                .collect(),
+        })
     }
 
     pub async fn audio_encoder_status(&self) -> crate::core::AudioEncoderStatus {
