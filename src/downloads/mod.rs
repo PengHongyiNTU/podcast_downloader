@@ -2,10 +2,11 @@ use std::path::{Path, PathBuf};
 
 use futures::StreamExt;
 use tokio::io::AsyncWriteExt;
+use tokio::sync::mpsc;
 use uuid::Uuid;
 
 use crate::{
-    core::{CoreConfig, EpisodeRecord, Result},
+    core::{CoreConfig, DownloadProgress, EpisodeRecord, Result},
     db::Db,
     decoder::{AudioFormat, classify_audio_format, convert_to_mp3},
     metadata::{date_prefix, filename_component, media_extension, short_hash},
@@ -18,21 +19,55 @@ pub struct DownloadJob {
     pub episode: EpisodeRecord,
 }
 
-pub async fn download_job(
+pub async fn cleanup_stale_temp_files(download_dir: &Path) -> Result<usize> {
+    let mut removed = 0;
+    let mut entries = match tokio::fs::read_dir(download_dir).await {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(error) => return Err(error.into()),
+    };
+
+    while let Some(entry) = entries.next_entry().await? {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().to_string();
+        if (name.ends_with(".lock") || name.ends_with(".part"))
+            && tokio::fs::remove_file(&path).await.is_ok()
+        {
+            removed += 1;
+        }
+    }
+
+    Ok(removed)
+}
+
+pub async fn download_job_with_progress(
     config: &CoreConfig,
     db: &Db,
     client: &reqwest::Client,
     job: &DownloadJob,
+    progress: Option<mpsc::UnboundedSender<DownloadProgress>>,
 ) -> Result<PathBuf> {
     tokio::fs::create_dir_all(&config.download_dir).await?;
     let attempt_id = db.start_attempt(&job.episode.id).await?;
     db.mark_episode_pending(&job.episode.id).await?;
 
-    let result = download_job_inner(config, client, job).await;
+    let result = download_job_inner(config, client, job, progress.as_ref()).await;
     match result {
         Ok(path) => {
             db.mark_episode_downloaded(&job.episode.id, &path).await?;
             db.finish_attempt(&attempt_id, "downloaded", None).await?;
+            emit(
+                progress.as_ref(),
+                DownloadProgress::DownloadFinished {
+                    feed_id: job.feed_id.clone(),
+                    episode_id: job.episode.id.clone(),
+                    episode_title: job.episode.normalized_title.clone(),
+                    file_path: path.to_string_lossy().to_string(),
+                },
+            );
             Ok(path)
         }
         Err(error) => {
@@ -40,6 +75,15 @@ pub async fn download_job(
             db.mark_episode_failed(&job.episode.id, &message).await?;
             db.finish_attempt(&attempt_id, "failed", Some(&message))
                 .await?;
+            emit(
+                progress.as_ref(),
+                DownloadProgress::DownloadFailed {
+                    feed_id: job.feed_id.clone(),
+                    episode_id: job.episode.id.clone(),
+                    episode_title: job.episode.normalized_title.clone(),
+                    error: message,
+                },
+            );
             Err(error)
         }
     }
@@ -49,12 +93,27 @@ async fn download_job_inner(
     config: &CoreConfig,
     client: &reqwest::Client,
     job: &DownloadJob,
+    progress: Option<&mpsc::UnboundedSender<DownloadProgress>>,
 ) -> Result<PathBuf> {
     let response = client
         .get(&job.episode.media_url)
         .send()
         .await?
         .error_for_status()?;
+    let total_bytes = response.content_length().or_else(|| {
+        job.episode
+            .media_length_bytes
+            .and_then(|value| u64::try_from(value).ok())
+    });
+    emit(
+        progress,
+        DownloadProgress::DownloadStarted {
+            feed_id: job.feed_id.clone(),
+            episode_id: job.episode.id.clone(),
+            episode_title: job.episode.normalized_title.clone(),
+            total_bytes,
+        },
+    );
     let content_type = response
         .headers()
         .get(reqwest::header::CONTENT_TYPE)
@@ -90,19 +149,48 @@ async fn download_job_inner(
     let result = async {
         let mut file = tokio::fs::File::create(&part_path).await?;
         let mut stream = response.bytes_stream();
+        let mut downloaded_bytes = 0_u64;
         while let Some(chunk) = stream.next().await {
-            file.write_all(&chunk?).await?;
+            let chunk = chunk?;
+            file.write_all(&chunk).await?;
+            downloaded_bytes = downloaded_bytes.saturating_add(chunk.len() as u64);
+            emit(
+                progress,
+                DownloadProgress::DownloadAdvanced {
+                    feed_id: job.feed_id.clone(),
+                    episode_id: job.episode.id.clone(),
+                    episode_title: job.episode.normalized_title.clone(),
+                    downloaded_bytes,
+                    total_bytes,
+                },
+            );
         }
         file.flush().await?;
         drop(file);
 
         if needs_conversion {
+            emit(
+                progress,
+                DownloadProgress::ConversionStarted {
+                    feed_id: job.feed_id.clone(),
+                    episode_id: job.episode.id.clone(),
+                    episode_title: job.episode.normalized_title.clone(),
+                },
+            );
             convert_to_mp3(
                 config.mp3_encoder_path.as_deref(),
                 &part_path,
                 &converted_part,
             )
             .await?;
+            emit(
+                progress,
+                DownloadProgress::ConversionFinished {
+                    feed_id: job.feed_id.clone(),
+                    episode_id: job.episode.id.clone(),
+                    episode_title: job.episode.normalized_title.clone(),
+                },
+            );
             let _ = tokio::fs::remove_file(&part_path).await;
             tokio::fs::rename(&converted_part, &target).await?;
         } else {
@@ -120,6 +208,12 @@ async fn download_job_inner(
     }
 
     result
+}
+
+fn emit(progress: Option<&mpsc::UnboundedSender<DownloadProgress>>, event: DownloadProgress) {
+    if let Some(progress) = progress {
+        let _ = progress.send(event);
+    }
 }
 
 fn base_filename(job: &DownloadJob, extension: &str) -> String {

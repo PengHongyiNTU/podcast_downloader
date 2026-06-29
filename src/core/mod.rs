@@ -1,5 +1,6 @@
 use std::{path::PathBuf, time::Duration};
 
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 pub type Result<T> = std::result::Result<T, PodcastError>;
@@ -30,10 +31,45 @@ pub enum PodcastError {
     Mp3ConversionFailed(String),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AppErrorDto {
+    pub kind: String,
+    pub message: String,
+}
+
+impl From<&PodcastError> for AppErrorDto {
+    fn from(error: &PodcastError) -> Self {
+        let kind = match error {
+            PodcastError::Database(_) => "database",
+            PodcastError::Http(_) => "http",
+            PodcastError::FeedParse(_) => "feed_parse",
+            PodcastError::Io(_) => "io",
+            PodcastError::Url(_) => "url",
+            PodcastError::DuplicateFeed(_) => "duplicate_feed",
+            PodcastError::NoDownloadableEpisodes(_) => "no_downloadable_episodes",
+            PodcastError::NotFound(_) => "not_found",
+            PodcastError::InvalidConfig(_) => "invalid_config",
+            PodcastError::Mp3EncoderUnavailable => "mp3_encoder_unavailable",
+            PodcastError::Mp3ConversionFailed(_) => "mp3_conversion_failed",
+        };
+        Self {
+            kind: kind.to_string(),
+            message: error.to_string(),
+        }
+    }
+}
+
+impl From<PodcastError> for AppErrorDto {
+    fn from(error: PodcastError) -> Self {
+        Self::from(&error)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct CoreConfig {
     pub database_path: PathBuf,
     pub download_dir: PathBuf,
+    pub log_file_path: Option<PathBuf>,
     pub country: String,
     pub http_timeout: Duration,
     pub user_agent: String,
@@ -50,10 +86,11 @@ impl CoreConfig {
         Self {
             database_path: database_path.into(),
             download_dir: download_dir.into(),
+            log_file_path: None,
             country: "US".to_string(),
             http_timeout: Duration::from_secs(30),
             user_agent: "podcast-downloader/0.1".to_string(),
-            default_retention_limit: 3,
+            default_retention_limit: 4,
             max_concurrent_feed_fetches: 4,
             max_concurrent_downloads: 2,
             apple_search_base_url: "https://itunes.apple.com/search".to_string(),
@@ -77,14 +114,14 @@ impl CoreConfig {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AudioEncoderStatus {
     Available { path: PathBuf, version: String },
     Missing { path: PathBuf },
     Error { path: PathBuf, error: String },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PodcastSearchResult {
     pub title: String,
     pub author: Option<String>,
@@ -93,7 +130,7 @@ pub struct PodcastSearchResult {
     pub apple_url: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FeedSubscription {
     pub id: String,
     pub feed_url: String,
@@ -108,7 +145,7 @@ pub struct FeedSubscription {
     pub last_checked_at: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EpisodeRecord {
     pub id: String,
     pub feed_id: String,
@@ -128,7 +165,8 @@ pub struct EpisodeRecord {
     pub last_error: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum EpisodeStatus {
     Pending,
     Downloaded,
@@ -159,7 +197,7 @@ impl EpisodeStatus {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FeedCheckSummary {
     pub feed_id: String,
     pub feed_title: String,
@@ -172,7 +210,7 @@ pub struct FeedCheckSummary {
     pub errors: Vec<String>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CheckSummary {
     pub feeds_checked: usize,
     pub discovered: usize,
@@ -185,16 +223,89 @@ pub struct CheckSummary {
     pub errors: Vec<String>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RetentionSummary {
     pub feeds_checked: usize,
     pub files_deleted: usize,
     pub errors: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LibraryStats {
+    pub feeds: usize,
+    pub episodes: usize,
+    pub downloaded: usize,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DownloadBatchSummary {
+    pub requested: usize,
+    pub queued: usize,
+    pub downloaded: usize,
+    pub failed: usize,
+    pub feed_summaries: Vec<FeedCheckSummary>,
+    pub errors: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DownloadFailure {
     pub feed_id: String,
     pub episode_id: String,
     pub error: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum DownloadProgress {
+    FeedStarted {
+        feed_id: String,
+        feed_title: String,
+    },
+    FeedFinished {
+        feed_id: String,
+        feed_title: String,
+        queued: usize,
+        downloaded: usize,
+        failed: usize,
+    },
+    DownloadQueued {
+        feed_id: String,
+        episode_id: String,
+        episode_title: String,
+    },
+    DownloadStarted {
+        feed_id: String,
+        episode_id: String,
+        episode_title: String,
+        total_bytes: Option<u64>,
+    },
+    DownloadAdvanced {
+        feed_id: String,
+        episode_id: String,
+        episode_title: String,
+        downloaded_bytes: u64,
+        total_bytes: Option<u64>,
+    },
+    ConversionStarted {
+        feed_id: String,
+        episode_id: String,
+        episode_title: String,
+    },
+    ConversionFinished {
+        feed_id: String,
+        episode_id: String,
+        episode_title: String,
+    },
+    DownloadFinished {
+        feed_id: String,
+        episode_id: String,
+        episode_title: String,
+        file_path: String,
+    },
+    DownloadFailed {
+        feed_id: String,
+        episode_id: String,
+        episode_title: String,
+        error: String,
+    },
 }

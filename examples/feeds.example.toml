@@ -1,7 +1,0 @@
-# Example feed configuration.
-# Final format will be decided during core implementation.
-
-[[feeds]]
-name = "Example Podcast"
-url = "https://example.com/feed.xml"
-

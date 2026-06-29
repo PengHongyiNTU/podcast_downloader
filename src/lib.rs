@@ -1,15 +1,20 @@
 pub mod app;
+pub mod config_file;
 pub mod core;
-pub mod db;
-pub mod decoder;
-pub mod discovery;
-pub mod downloads;
-pub mod feeds;
-pub mod metadata;
-pub mod retention;
+pub mod logging;
+pub mod tui;
+
+mod db;
+mod decoder;
+mod discovery;
+mod downloads;
+mod feeds;
+mod metadata;
+mod retention;
 
 pub use app::PodcastApp;
 pub use core::{
-    AudioEncoderStatus, CheckSummary, CoreConfig, DownloadFailure, EpisodeRecord, FeedCheckSummary,
-    FeedSubscription, PodcastError, PodcastSearchResult, Result, RetentionSummary,
+    AppErrorDto, AudioEncoderStatus, CheckSummary, CoreConfig, DownloadBatchSummary,
+    DownloadFailure, DownloadProgress, EpisodeRecord, EpisodeStatus, FeedCheckSummary,
+    FeedSubscription, LibraryStats, PodcastError, PodcastSearchResult, Result, RetentionSummary,
 };

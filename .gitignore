@@ -12,12 +12,16 @@
 *.db-shm
 *.db-wal
 *.log
+/config.toml
 /downloads/
 /Shows/
 
 # Environment
 .env
 .env.*
+
+# ffmpeg
+/ffmpeg
 
 # OS / editor
 .DS_Store

@@ -69,6 +69,35 @@ pub fn rss_with_media(base: &str) -> String {
     )
 }
 
+pub fn rss_with_five_media(base: &str) -> String {
+    let items = (1..=5)
+        .rev()
+        .map(|index| {
+            let day = 24 + index;
+            format!(
+                r#"
+    <item>
+      <guid>episode-{index}</guid>
+      <title>Episode {index}</title>
+      <pubDate>Mon, {day} Jun 2026 10:00:00 GMT</pubDate>
+      <enclosure url="{base}/episode-{index}.mp3" length="123" type="audio/mpeg"/>
+    </item>"#
+            )
+        })
+        .collect::<String>();
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>Five Episode Show</title>
+    <link>https://example.com/show</link>
+    <description>A show used in tests.</description>
+    {items}
+  </channel>
+</rss>"#
+    )
+}
+
 pub fn rss_with_single_mp3(base: &str) -> String {
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>

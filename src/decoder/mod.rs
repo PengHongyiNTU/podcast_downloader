@@ -107,6 +107,8 @@ pub async fn convert_to_mp3(
         .arg("libmp3lame")
         .arg("-q:a")
         .arg("2")
+        .arg("-f")
+        .arg("mp3")
         .arg(output_path)
         .stdin(Stdio::null())
         .stdout(Stdio::null())

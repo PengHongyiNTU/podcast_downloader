@@ -8,7 +8,7 @@ use sqlx::{
 use uuid::Uuid;
 
 use crate::{
-    core::{EpisodeRecord, EpisodeStatus, FeedSubscription, PodcastError, Result},
+    core::{EpisodeRecord, EpisodeStatus, FeedSubscription, LibraryStats, PodcastError, Result},
     feeds::{ParsedEpisode, ParsedFeed},
 };
 
@@ -83,6 +83,22 @@ impl Db {
         .fetch_all(&self.pool)
         .await?;
         rows.into_iter().map(feed_from_row).collect()
+    }
+
+    pub async fn library_stats(&self) -> Result<LibraryStats> {
+        let row = sqlx::query(
+            "SELECT
+                (SELECT COUNT(*) FROM feeds) AS feeds,
+                (SELECT COUNT(*) FROM episodes) AS episodes,
+                (SELECT COUNT(*) FROM episodes WHERE status = 'downloaded') AS downloaded",
+        )
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(LibraryStats {
+            feeds: usize::try_from(row.get::<i64, _>("feeds")).unwrap_or_default(),
+            episodes: usize::try_from(row.get::<i64, _>("episodes")).unwrap_or_default(),
+            downloaded: usize::try_from(row.get::<i64, _>("downloaded")).unwrap_or_default(),
+        })
     }
 
     pub async fn insert_feed(
@@ -275,6 +291,19 @@ impl Db {
              FROM episodes
              WHERE feed_id = ? AND status = 'downloaded'
              ORDER BY COALESCE(published_at, downloaded_at, first_seen_at) DESC, downloaded_at DESC",
+        )
+        .bind(feed_id)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter().map(episode_from_row).collect()
+    }
+
+    pub async fn episodes_for_feed(&self, feed_id: &str) -> Result<Vec<EpisodeRecord>> {
+        let rows = sqlx::query(
+            "SELECT id, feed_id, episode_key, raw_title, normalized_title, raw_author, published_at, media_url, media_content_type, media_length_bytes, status, file_path, first_seen_at, downloaded_at, deleted_at, last_error
+             FROM episodes
+             WHERE feed_id = ?
+             ORDER BY COALESCE(published_at, downloaded_at, first_seen_at) DESC, first_seen_at DESC",
         )
         .bind(feed_id)
         .fetch_all(&self.pool)
