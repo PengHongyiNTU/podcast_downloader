@@ -1,110 +1,136 @@
 # Podcast Downloader
 
-Podcast Downloader is a Rust podcast library app with:
+A podcast subscription manager and downloader purpose-built for offline listening on devices with no internet connectivity, such as swimming earpods that function as USB MP3 players. Subscribe to podcasts, automatically download new episodes as MP3 files, and copy them to your device.
 
-- A reusable async Rust core
-- A Ratatui terminal UI
-- A Tauri v2 desktop app built with React, TypeScript, Tailwind, and shadcn/ui-style components
+- **Rust async core** — reusable library for feed management, downloads, and retention
+- **Ratatui terminal UI** — keyboard-driven, works over SSH and on headless servers
+- **Tauri v2 desktop app** — React + TypeScript + Tailwind + shadcn/ui
 
-The app can search Apple Podcasts, subscribe to RSS/Atom feeds, check feeds concurrently, download episodes, convert non-MP3 audio to MP3 through FFmpeg, enforce per-feed retention, and persist library state in SQLite.
+## Motivation
 
-## Current Features
+Many waterproof earpods (e.g. for swimming) lack Bluetooth or Wi-Fi and instead behave like a USB mass storage device that plays MP3 files in alphabetical order. This tool automates the workflow of subscribing to podcasts, downloading episodes, converting audio to MP3 when needed, and maintaining a local library ready to sync to your device.
 
-- Apple Podcasts search with addable RSS feed candidates
-- RSS/Atom feed ingestion and preview
-- Watched podcast library with feed metadata and episode history
-- Manual and automatic feed checks
-- Bounded concurrent feed fetches and downloads
-- Download progress events for the desktop UI
-- MP3-only library output with FFmpeg conversion when configured
+## Features
+
+- Search Apple Podcasts via the iTunes API
+- Subscribe to any RSS/Atom podcast feed
+- Parse feeds and extract episode metadata and enclosures
+- Download episodes with streaming progress
+- Convert non-MP3 audio to MP3 via FFmpeg (configurable per feed)
+- Enforce per-feed retention limits (auto-delete old episodes)
+- Concurrent feed checking and downloads
 - SQLite persistence
-- Global and per-feed retention limits
-- Local `config.toml` settings
-- File logging through Rust's `log` facade
-- Windows Tauri installers through MSI and NSIS
-
-## Repository Layout
-
-```text
-podcast_downloader/
-  src/                 Rust core, TUI, config, logging, SQLite, downloads
-  src-tauri/           Tauri v2 desktop shell and command bridge
-  ui/                  React + TypeScript frontend
-  tests/               Rust integration tests and fixtures
-  docs/                Architecture notes
-  releases/            Local release staging notes; generated binaries are ignored
-```
+- Global and per-feed settings via `config.toml`
+- File logging
 
 ## Requirements
 
-- Rust via `rustup`
-- Node.js and pnpm
-- FFmpeg for non-MP3 downloads when `ensure_mp3 = true`
+| Dependency | Purpose |
+|---|---|
+| Rust (stable, via `rustup`) | Core library, TUI, and desktop backend |
+| Node.js ≥18 + pnpm | Desktop frontend and Tauri bundling |
+| FFmpeg | MP3 conversion for non-MP3 podcast enclosures |
 
-In this Codex desktop workspace, Node and pnpm are available through the bundled runtime. If your shell does not have Node/Cargo on PATH, use:
+FFmpeg must be on your PATH or its path set in `config.toml`. On Windows the app auto-detects FFmpeg via Winget if configured.
 
-```powershell
-$env:PATH = "C:\Users\admin\.cargo\bin;C:\Users\admin\.cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin;C:\Users\admin\.cache\codex-runtimes\codex-primary-runtime\dependencies\bin;$env:PATH"
-```
+## Quick Start
 
-## Run
+### Terminal UI (all platforms)
 
-Install frontend dependencies:
-
-```powershell
-pnpm install
-```
-
-Run the Tauri desktop app in debug mode:
-
-```powershell
-pnpm tauri dev
-```
-
-Run the terminal UI:
-
-```powershell
+```bash
 cargo run
 ```
 
-## Build Installers
+### Desktop app (all platforms)
 
-```powershell
+```bash
+pnpm install
+pnpm tauri dev
+```
+
+The terminal UI is also available as a standalone binary — see [Releases](https://github.com/PengHongyiNTU/podcast_downloader/releases) for prebuilt Windows executables.
+
+## Building
+
+### Desktop installer
+
+```bash
+pnpm install
 pnpm tauri build
 ```
 
-Build outputs are generated under:
+Output: `src-tauri/target/release/bundle/` (`.msi` and `.exe` on Windows, `.deb`/`.AppImage` on Linux, `.dmg` on macOS).
 
-```text
-src-tauri/target/release/bundle/
+### Linux
+
+Install system dependencies for Tauri:
+
+**Debian/Ubuntu:**
+```bash
+sudo apt install libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libasound2-dev
 ```
 
-For local testing, installers can be copied into `releases/`, but generated release binaries are intentionally ignored by git.
+**Fedora:**
+```bash
+sudo dnf install webkit2gtk4.1-devel libappindicator-gtk3-devel librsvg2-devel patchelf alsa-lib-devel
+```
+
+**Arch:**
+```bash
+sudo pacman -S webkit2gtk-4.1 libappindicator-gtk3 librsvg patchelf alsa-lib
+```
+
+Then follow the Quick Start or Building steps above.
+
+### macOS
+
+Install Xcode Command Line Tools, then follow the Quick Start or Building steps. Tauri uses `cargo-tauri` under the hood and will handle macOS-specific bundling automatically (requires an Apple Developer account for signing).
+
+### TUI-only binary
+
+To build just the terminal UI (no desktop frontend):
+
+```bash
+cargo build --release --bin podcast_downloader
+```
+
+The binary is at `target/release/podcast_downloader` (or `.exe` on Windows).
 
 ## Verify
 
-```powershell
+```bash
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 cargo test
-cargo fmt --check --manifest-path src-tauri/Cargo.toml
-cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
-cargo test --manifest-path src-tauri/Cargo.toml
 pnpm typecheck
 pnpm test
 pnpm build
 ```
 
-Run `pnpm tauri build` before cutting a release to verify installer packaging and icons.
-
 ## Local Data
 
-The app creates local data such as:
+The app creates the following files in the working directory (all gitignored):
 
-- `config.toml`
-- SQLite database files
-- downloaded audio files
-- log files
-- Tauri/frontend build outputs
+| File | Purpose |
+|---|---|
+| `config.toml` | App settings (download dir, concurrency, FFmpeg path, etc.) |
+| `podcasts.db` | SQLite library database |
+| `downloads/` | Downloaded MP3 files |
+| `podcast_downloader.log` | File logs |
 
-These are ignored by git.
+## Repository Layout
+
+```text
+podcast_downloader/
+├── src/                 # Rust core, TUI, config, logging, SQLite, downloads
+├── src-tauri/           # Tauri v2 desktop shell and command bridge
+├── ui/                  # React + TypeScript frontend
+├── tests/               # Rust integration tests and fixtures
+├── docs/                # Architecture documentation
+├── scripts/             # Build scripts (TUI sidecar)
+└── packaging/           # Platform packaging stubs
+```
+
+## License
+
+MIT

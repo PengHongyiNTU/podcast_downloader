@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Desktop frontend for Podcast Downloader"
 authors = ["Podcast Downloader"]
 license = "MIT"
-repository = ""
+repository = "https://github.com/PengHongyiNTU/podcast_downloader"
 edition = "2024"
 
 [lib]

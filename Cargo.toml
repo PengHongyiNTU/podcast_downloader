@@ -3,6 +3,7 @@ name = "podcast_downloader"
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
+repository = "https://github.com/PengHongyiNTU/podcast_downloader"
 
 [dependencies]
 chrono = { version = "0.4", features = ["clock"] }
